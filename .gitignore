@@ -1,0 +1,6 @@
+*.o
+*.hi
+*.pyc
+__pycache__
+*~
+*.swp
