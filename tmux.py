@@ -22,6 +22,9 @@ import struct
 import sys
 import termios
 import unicodedata
+import pty
+import tty
+import subprocess
 
 logging.basicConfig(filename='tmux.log',
                     filemode='w',
@@ -29,12 +32,20 @@ logging.basicConfig(filename='tmux.log',
 log = logging.getLogger('tmux')
 
 
-def gethw():
-    '''Return the screen real size'''
+def get_hw(fd):
+    '''Return the size of the tty asociated to the given file descriptor'''
     assert platform.system() != 'Windows'
 
-    buf = fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, b'\x00' * 8)
+    buf = fcntl.ioctl(fd, termios.TIOCGWINSZ, b'\x00' * 8)
     return struct.unpack("hhhh", buf)[0:2]
+
+
+def set_hw(fd, height, width):
+    '''Set the size of the tty asociated to the given file descriptor'''
+    assert platform.system() != 'Windows'
+
+    buf = struct.pack('hhhh', height, width, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, buf) # TODO: check that it's the right way
 
 
 def addstr(win, y, x, s, *args, **kwargs):
@@ -42,6 +53,11 @@ def addstr(win, y, x, s, *args, **kwargs):
         win.addstr(y, x, s, *args, **kwargs)
     except curses.error:
         pass # writing on the last col/row raises an exception
+
+
+def can_read(fd):
+    '''Returns True if the file descriptor has available data'''
+    return select.select([fd], [], [], 0) == ([fd], [], [])
 
 
 class Point:
@@ -247,15 +263,15 @@ class ConsoleWindow(Window):
     def do_command(self, key):
         log.debug('do_command(%r)', key)
 
-        # FIXME: For debugging purpose only
-        if key == b'\x1b[A':
-            self.cursor.y = max(0, self.cursor.y - 1)
-        elif key == b'\x1b[B':
-            self.cursor.y = min(self.height - 1, self.cursor.y + 1)
-        elif key == b'\x1b[C':
-            self.cursor.x = min(self.width - 1, self.cursor.x + 1)
-        elif key == b'\x1b[D':
-            self.cursor.x = max(0, self.cursor.x - 1)
+        #FIXME: For debugging purpose only
+        #if key == b'\x1b[A':
+        #    self.cursor.y = max(0, self.cursor.y - 1)
+        #elif key == b'\x1b[B':
+        #    self.cursor.y = min(self.height - 1, self.cursor.y + 1)
+        #elif key == b'\x1b[C':
+        #    self.cursor.x = min(self.width - 1, self.cursor.x + 1)
+        #elif key == b'\x1b[D':
+        #    self.cursor.x = max(0, self.cursor.x - 1)
 
     def write(self, data):
         '''Write data at the current cursor position'''
@@ -263,6 +279,8 @@ class ConsoleWindow(Window):
 
         if isinstance(data, bytes):
             data = data.decode('utf8', 'replace')
+
+        log.debug('write(%r)', data)
 
         current = ''
         while data:
@@ -551,9 +569,108 @@ class ConsoleWindow(Window):
         self.redraw = True
 
 
+class Process:
+    def __init__(self, args, env=None):
+        # validate parameters
+        if not isinstance(args, str):
+            args = [args]
+
+        env = env or os.environ
+
+        # open a new pty
+        master, slave = pty.openpty()
+        tty.setraw(master)
+        tty.setraw(slave)
+
+        # launch subprocess
+        self.proc = subprocess.Popen(args=args,
+                                     env=env,
+                                     stdin=slave,
+                                     stdout=slave,
+                                     stderr=slave,
+                                     close_fds=True,
+                                     preexec_fn=self._preexec_fn)
+
+        self.proc.stdin = os.fdopen(os.dup(master), 'r+b', 0)
+        self.proc.stdout = os.fdopen(os.dup(master), 'r+b', 0)
+        self.proc.stderr = os.fdopen(os.dup(master), 'r+b', 0)
+
+        os.close(master)
+        os.close(slave)
+
+    @property
+    def pid(self):
+        return self.proc.pid
+
+    @property
+    def stdin(self):
+        return self.proc.stdin
+
+    @property
+    def stdout(self):
+        return self.proc.stdout
+
+    @property
+    def stderr(self):
+        return self.proc.stderr
+
+    def poll(self):
+        return self.proc.poll()
+
+    def kill(self):
+        return self.proc.kill()
+
+    def send_signal(self, sig):
+        self.proc.send_signal(sig)
+
+    def _preexec_fn(self):
+        '''
+        Routine executed in the child process before invoking execve().
+
+        This makes the pseudo-terminal the controlling tty. This should be
+        more portable than the pty.fork() function.
+        '''
+        child_name = os.ttyname(0)
+
+        # Disconnect from controlling tty. Harmless if not already connected.
+        try:
+            fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
+            if fd >= 0:
+                os.close(fd)
+        except OSError:
+            pass  # Already disconnected
+
+        os.setsid()
+
+        # Verify we are disconnected from controlling tty
+        # by attempting to open it again.
+        try:
+            fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
+            if fd >= 0:
+                os.close(fd)
+                raise Exception('Failed to disconnect from controlling tty. '
+                                'It is still possible to open /dev/tty.')
+        except OSError:
+            pass  # Good! We are disconnected from a controlling tty.
+
+        # Verify we can open the child pty.
+        fd = os.open(child_name, os.O_RDWR)
+        if fd < 0:
+            raise Exception('Could not open child pty, %s' % child_name)
+        else:
+            os.close(fd)
+
+        # Verify we now have a controlling tty.
+        fd = os.open('/dev/tty', os.O_WRONLY)
+        if fd < 0:
+            raise Exception('Could not open controlling tty, /dev/tty')
+        else:
+            os.close(fd)
+
+
 class ScreenManager:
     def __init__(self, screen):
-        height, width = gethw()
+        height, width = get_hw(sys.stdout)
         self.screen = screen
         self.banner = BannerWindow(1, width, height - 1, 0)
         self.console = ConsoleWindow(height - 1, width, 0, 0, 200)
@@ -568,13 +685,17 @@ class ScreenManager:
         self.console.refresh()
 
     def resize(self):
-        height, width = gethw()
+        height, width = get_hw(sys.stdout)
         curses.resizeterm(height, width)
         curses.update_lines_cols()
 
         self.screen.resize(height, width)
         self.banner.resize(1, width, height - 1, 0)
         self.console.resize(height - 1, width, 0, 0)
+
+        set_hw(self.proc.stdout, self.console.height, self.console.width)
+        self.proc.send_signal(signal.SIGWINCH)
+
         self.resize_event = False
 
         self.screen.clear()
@@ -583,7 +704,7 @@ class ScreenManager:
     def get_key(self):
         fd = sys.stdin.fileno()
 
-        if select.select([fd], [], [], 0) == ([fd], [], []):
+        if can_read(fd):
             return os.read(fd, 1024)
         else:
             return None
@@ -598,6 +719,10 @@ class ScreenManager:
         old_sigwinch = signal.signal(signal.SIGWINCH, self.sigwinch) # window resized
         old_sigcont = signal.signal(signal.SIGCONT, self.sigcont) # redraw after being suspended
 
+        self.proc = Process(os.environ.get('SHELL', '/bin/sh'))
+        set_hw(self.proc.stdout, self.console.height, self.console.width)
+        self.proc.send_signal(signal.SIGWINCH)
+
         try:
             self.refresh()
 
@@ -605,6 +730,7 @@ class ScreenManager:
                 key = self.get_key()
 
                 if key:
+                    '''
                     self.console.do_command(key)
 
                     if key == b'\x04' or key == b'\x03': # EOF or Ctrl-C
@@ -643,16 +769,32 @@ class ScreenManager:
                         self.console.write('\x1b[2J')
                     elif key == b'l':
                         self.console.write(string.ascii_uppercase)
+                    '''
 
+                    self.proc.stdin.write(key)
                     self.refresh()
 
                 if self.resize_event:
                     self.resize()
 
+                if self.proc.poll() is not None:
+                    break
+
+                if can_read(self.proc.stdout):
+                    self.console.write(self.proc.stdout.read(4096))
+                    self.refresh()
+
+                if can_read(self.proc.stderr):
+                    self.console.write(self.proc.stderr.read(4096))
+                    self.refresh()
+
                 curses.napms(5)
         finally:
             signal.signal(signal.SIGWINCH, old_sigwinch)
             signal.signal(signal.SIGCONT, old_sigcont)
+
+            if self.proc.poll() is None:
+                self.proc.kill()
 
 
 def main(screen):
