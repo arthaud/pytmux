@@ -37,7 +37,7 @@ def get_hw(fd):
     assert platform.system() != 'Windows'
 
     buf = fcntl.ioctl(fd, termios.TIOCGWINSZ, b'\x00' * 8)
-    return struct.unpack("hhhh", buf)[0:2]
+    return struct.unpack('hhhh', buf)[0:2]
 
 
 def set_hw(fd, height, width):
@@ -45,7 +45,7 @@ def set_hw(fd, height, width):
     assert platform.system() != 'Windows'
 
     buf = struct.pack('hhhh', height, width, 0, 0)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, buf) # TODO: check that it's the right way
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, buf)
 
 
 def addstr(win, y, x, s, *args, **kwargs):
@@ -163,11 +163,15 @@ class ConsoleWindow(Window):
         real_y, real_x = self._cursor_real_pos()
         super(ConsoleWindow, self).resize(height, width, begin_y, begin_x)
 
-        if prev_height > height:
+        if prev_height != height:
             diff = prev_height - height
-            self.offset = min(self.offset + diff, len(self.lines) - 1)
-            self.display_offset = min(self.display_offset + diff, len(self.lines) - 1)
-            self.cursor.y = max(0, self.cursor.y - diff)
+            if prev_height > height and self.cursor.y < height:
+                diff = 0
+
+            diff = max(diff, -self.offset)
+            self.offset = max(min(self.offset + diff, len(self.lines) - 1), 0)
+            self.display_offset = max(min(self.display_offset + diff, len(self.lines) - 1), 0)
+            self.cursor.y = max(min(self.cursor.y - diff, height - 1), 0)
 
         if prev_width != width:
             # index of the current real line
@@ -182,20 +186,13 @@ class ConsoleWindow(Window):
             self.offset = max(0, self.offset + new_y - prev_y)
             self.display_offset = max(0, self.display_offset + new_y - prev_y)
 
-            if new_y + (real_x // width) - self.offset > height - 1:
-                # cursor outside of the window
-                self.offset = new_y + (real_x // width) - (height - 1)
+        # clean-up that could be needed (if too many/not enough lines)
 
-            if self.auto_scroll:
-                self.display_offset = self.offset
+        while len(self.lines) > self.offset + height:
+            self._remove_lastline()
 
-            self.cursor.y = max(0, new_y + (real_x // width) - self.offset)
-            self.cursor.x = max(0, real_x % width)
-
-            # Note that self.offset can be updated in _insert_newline
-            # because of _check_history_size
-            while self.offset + self.cursor.y >= len(self.lines):
-                self._insert_newline(real=False)
+        while self.offset + self.cursor.y >= len(self.lines):
+            self._insert_newline(real=False)
 
         self.redraw = True
 
@@ -249,7 +246,7 @@ class ConsoleWindow(Window):
 
         if 0 <= self.offset + self.cursor.y - self.display_offset < self.height:
             self.win.move(self.offset + self.cursor.y - self.display_offset,
-                          self.cursor.x)
+                          min(self.cursor.x, self.width - 1))
             visibility = 1
         else:
             visibility = 0
@@ -361,6 +358,12 @@ class ConsoleWindow(Window):
 
         self._check_history_size()
 
+    def _remove_lastline(self):
+        '''Remove the last line in the buffer'''
+        assert len(self.lines) > 0
+
+        self.lines.pop()
+
     def _check_history_size(self):
         '''Shrink the history if needed
 
@@ -377,11 +380,12 @@ class ConsoleWindow(Window):
         assert self.offset + self.cursor.y < len(self.lines)
         assert all(c not in data for c in ('\b', '\t', '\n', '\r', '\x1b'))
 
-        if not data:
-            return
-
         while data:
+            if self.cursor.x == self.width:
+                self._cursor_newline(real=False)
+
             y, x = self.offset + self.cursor.y, self.cursor.x
+
             line = data[:self.width - x]
             data = data[self.width - x:]
 
@@ -395,8 +399,6 @@ class ConsoleWindow(Window):
                 addstr(self.win, y - self.display_offset, x, line)
 
             self.cursor.x += len(line)
-            if self.cursor.x >= self.width:
-                self._cursor_newline(real=False)
 
     def _index_real_line(self, line_num):
         '''
@@ -505,7 +507,7 @@ class ConsoleWindow(Window):
         self._move_cursor_win(self.cursor.y, max(0, self.cursor.x - offset))
 
     def _ctl_erase_end_line(self, match):
-        y, x = self.offset + self.cursor.y, self.cursor.x
+        y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
 
         # update buffer
         self.lines[y][0] = self.lines[y][0][:x]
@@ -515,7 +517,7 @@ class ConsoleWindow(Window):
             addstr(self.win, y - self.display_offset, x, ' ' * (self.width - x))
 
     def _ctl_erase_start_line(self, match):
-        y, x = self.offset + self.cursor.y, self.cursor.x
+        y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
 
         # update buffer
         self.lines[y][0] = ' ' * (x + 1) + self.lines[y][0][x + 1:]
@@ -535,7 +537,7 @@ class ConsoleWindow(Window):
             addstr(self.win, y - self.display_offset, 0, ' ' * self.width)
 
     def _ctl_erase_down(self, match):
-        y, x = self.offset + self.cursor.y, self.cursor.x
+        y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
 
         # update buffer
         self.lines[y][0] = self.lines[y][0][:x]
@@ -543,7 +545,7 @@ class ConsoleWindow(Window):
         self.redraw = True
 
     def _ctl_erase_up(self, match):
-        y, x = self.offset + self.cursor.y, self.cursor.x
+        y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
 
         # update buffer
         self.lines[y][0] = ' ' * (x + 1) + self.lines[y][0][x + 1:]
