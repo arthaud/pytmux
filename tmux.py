@@ -461,6 +461,8 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[(\d+)?B', self._ctl_cursor_down),
                            (r'^\x1b\[(\d+)?C', self._ctl_cursor_forward),
                            (r'^\x1b\[(\d+)?D', self._ctl_cursor_backward),
+                           (r'^\x1b\[(\d+)?d', self._ctl_cursor_vertical_pos),
+                           (r'^\x1b\[(\d+)?G', self._ctl_cursor_horizontal_pos),
                            (r'^\x1b\[0?K', self._ctl_erase_end_line),
                            (r'^\x1b\[1K', self._ctl_erase_start_line),
                            (r'^\x1b\[2K', self._ctl_erase_entire_line),
@@ -520,6 +522,20 @@ class ConsoleWindow(Window):
             offset = int(match.group(1))
 
         self._move_cursor_win(self.cursor.y, max(0, self.cursor.x - offset))
+
+    def _ctl_cursor_vertical_pos(self, match):
+        y = 1
+        if match.group(1):
+            y = int(match.group(1))
+
+        self._move_cursor_win(y - 1, self.cursor.x)
+
+    def _ctl_cursor_horizontal_pos(self, match):
+        x = 1
+        if match.group(1):
+            x = int(match.group(1))
+
+        self._move_cursor_win(self.cursor.y, x - 1)
 
     def _ctl_erase_end_line(self, match):
         y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
