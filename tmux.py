@@ -233,13 +233,11 @@ class ConsoleWindow(Window):
     def refresh(self):
         if self.redraw:
             self.win.leaveok(1)
-            self.win.clear()
 
             for i in range(self.display_offset, self.display_offset + self.height):
-                if i >= len(self.lines):
-                    break
-
-                addstr(self.win, i - self.display_offset, 0, self.lines[i][0])
+                line = self.lines[i][0] if i < len(self.lines) else ''
+                line = line.ljust(self.width, ' ')
+                addstr(self.win, i - self.display_offset, 0, line)
 
             self.redraw = False
             self.win.leaveok(0)
