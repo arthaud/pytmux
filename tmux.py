@@ -8,23 +8,24 @@ Notes:
 '''
 
 from datetime import datetime
+import copy
 import curses
 import fcntl
 import locale
 import logging
 import os
 import platform
+import pty
 import re
 import select
 import signal
 import string
 import struct
+import subprocess
 import sys
 import termios
-import unicodedata
-import pty
 import tty
-import subprocess
+import unicodedata
 
 logging.basicConfig(filename='tmux.log',
                     filemode='w',
@@ -158,7 +159,6 @@ class ConsoleWindow(Window):
         self.redraw = True
 
     def resize(self, height, width, begin_y, begin_x):
-        log.debug('resize from %r to %r', self.size, (height, width))
         prev_height, prev_width = self.size
         real_y, real_x = self._cursor_real_pos()
         super(ConsoleWindow, self).resize(height, width, begin_y, begin_x)
@@ -373,6 +373,21 @@ class ConsoleWindow(Window):
             self.display_offset = max(0, self.display_offset - nb)
             self.offset -= nb
 
+    def _update_line(self, y, x, data):
+        assert isinstance(data, str)
+        assert 0 <= y < len(self.lines)
+        assert 0 <= x < self.width
+        assert 0 <= x + len(data) <= self.width
+
+        # update buffer
+        self.lines[y][0] = (self.lines[y][0][:x].ljust(x, ' ') +
+                            data +
+                            self.lines[y][0][x + len(data):]).rstrip()
+
+        # update screen directly (only if the window won't be redraw completely)
+        if not self.redraw and self.display_offset <= y < self.display_offset + self.height:
+            addstr(self.win, y - self.display_offset, x, data)
+
     def _write_line(self, data):
         assert isinstance(data, str)
         assert self.offset + self.cursor.y < len(self.lines)
@@ -387,14 +402,7 @@ class ConsoleWindow(Window):
             line = data[:self.width - x]
             data = data[self.width - x:]
 
-            # update buffer
-            self.lines[y][0] = (self.lines[y][0][:x].ljust(x, ' ') +
-                                line +
-                                self.lines[y][0][x + len(line):])
-
-            # update screen directly (only if the window won't be redraw completely)
-            if not self.redraw and self.display_offset <= y < self.display_offset + self.height:
-                addstr(self.win, y - self.display_offset, x, line)
+            self._update_line(y, x, line)
 
             self.cursor.x += len(line)
 
@@ -453,16 +461,25 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[(\d+)?B', self._ctl_cursor_down),
                            (r'^\x1b\[(\d+)?C', self._ctl_cursor_forward),
                            (r'^\x1b\[(\d+)?D', self._ctl_cursor_backward),
-                           (r'^\x1b\[K', self._ctl_erase_end_line),
+                           (r'^\x1b\[0?K', self._ctl_erase_end_line),
                            (r'^\x1b\[1K', self._ctl_erase_start_line),
                            (r'^\x1b\[2K', self._ctl_erase_entire_line),
-                           (r'^\x1b\[J', self._ctl_erase_down),
+                           (r'^\x1b\[0?J', self._ctl_erase_down),
                            (r'^\x1b\[1J', self._ctl_erase_up),
                            (r'^\x1b\[2J', self._ctl_erase_screen),
-                           (r'^\x1b\[(\d+(;\d+)*)m', lambda s: None),
+                           (r'^\x1b\[X', self._ctl_erase_char),
+                           (r'^\x1b\[M', self._ctl_erase_entire_line),
+                           (r'^\x1b\[P', self._ctl_delete_char),
+                           (r'^\x1bD', self._ctl_scroll_down),
+                           (r'^\x1bM', self._ctl_scroll_up),
+                           (r'^\x1b\[(\d+(;\d+)*)?m', lambda s: None),
+                           (r'^\x1b=', lambda s: None),
+                           (r'^\x1b\[\?1(h|l)', lambda s: None),
+                           (r'^\x1b\[\?1049(h|l)', lambda s: None),
                            (r'^\x1b\[\?2004(h|l)', lambda s: None)):
             match = re.search(regex, data)
             if match:
+                log.debug('control sequence %r -> %s', match.group(0), fun.__name__)
                 fun(match)
                 return len(match.group(0))
 
@@ -506,23 +523,11 @@ class ConsoleWindow(Window):
 
     def _ctl_erase_end_line(self, match):
         y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
-
-        # update buffer
-        self.lines[y][0] = self.lines[y][0][:x]
-
-        # update screen directly (only if the window won't be redraw completely)
-        if not self.redraw and self.display_offset <= y < self.display_offset + self.height:
-            addstr(self.win, y - self.display_offset, x, ' ' * (self.width - x))
+        self._update_line(y, x, ' ' * (self.width - x))
 
     def _ctl_erase_start_line(self, match):
         y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
-
-        # update buffer
-        self.lines[y][0] = ' ' * (x + 1) + self.lines[y][0][x + 1:]
-
-        # update screen directly (only if the window won't be redraw completely)
-        if not self.redraw and self.display_offset <= y < self.display_offset + self.height:
-            addstr(self.win, y - self.display_offset, 0, ' ' * (x + 1))
+        self._update_line(y, 0, ' ' * (x + 1))
 
     def _ctl_erase_entire_line(self, match):
         y = self.offset + self.cursor.y
@@ -554,6 +559,66 @@ class ConsoleWindow(Window):
     def _ctl_erase_screen(self, match):
         self._ctl_erase_up(match)
         self._ctl_erase_down(match)
+
+    def _ctl_erase_char(self, match):
+        y, x = self.offset + self.cursor.y, self.cursor.x
+
+        if x == self.width:
+            return
+
+        self._update_line(y, x, ' ')
+
+    def _ctl_delete_char(self, match):
+        y, x = self.offset + self.cursor.y, self.cursor.x
+
+        if x == self.width:
+            return
+
+        self._update_line(y, x, self.lines[y][0][x + 1:].ljust(self.width - x, ' '))
+
+    def _ctl_scroll_down(self, match):
+        if self.cursor.y < self.height - 1:
+            self._move_cursor_win(self.cursor.y + 1, self.cursor.x)
+            return
+
+        # shift all lines from self.offset by -1
+        for i in range(self.offset, self.offset + self.height - 1):
+            self.lines[i] = copy.copy(self.lines[i + 1])
+
+        self.lines[self.offset + self.height - 1][0] = ''
+        self.lines[self.offset + self.height - 1][1] += 1
+
+        self.redraw = True
+
+    def _ctl_scroll_up(self, match):
+        if self.cursor.y > 0:
+            self._move_cursor_win(self.cursor.y - 1, self.cursor.x)
+            return
+
+        # shift all lines from self.offset by 1
+        for i in range(min(len(self.lines) - 1, self.offset + self.height - 2),
+                       self.offset - 1,
+                       -1):
+            if i == len(self.lines) - 1: # last line
+                self.lines.append(copy.copy(self.lines[i]))
+            else:
+                self.lines[i + 1] = copy.copy(self.lines[i])
+
+        self.lines[self.offset][0] = ''
+
+        # update real line numbers
+        num = self.lines[self.offset - 1][1] + 1 if self.offset > 0 else 0
+        self.lines[self.offset][1] = num
+        last_num = None
+
+        for i in range(self.offset + 1, len(self.lines)):
+            if last_num != self.lines[i][1]:
+                num += 1
+
+            last_num = self.lines[i][1]
+            self.lines[i][1] = num
+
+        self.redraw = True
 
     def scroll(self, offset):
         if not self.display_offset + offset >= 0:
