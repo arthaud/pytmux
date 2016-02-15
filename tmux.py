@@ -471,7 +471,7 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[2J', self._ctl_erase_screen),
                            (r'^\x1b\[X', self._ctl_erase_char),
                            (r'^\x1b\[M', self._ctl_erase_entire_line),
-                           (r'^\x1b\[P', self._ctl_delete_char),
+                           (r'^\x1b\[(\d+)?P', self._ctl_delete_char),
                            (r'^\x1bD', self._ctl_scroll_down),
                            (r'^\x1bM', self._ctl_scroll_up),
                            (r'^\x1b\[(\d+(;\d+)*)?m', lambda s: None),
@@ -585,12 +585,16 @@ class ConsoleWindow(Window):
         self._update_line(y, x, ' ')
 
     def _ctl_delete_char(self, match):
+        num = 1
+        if match.group(1):
+            num = int(match.group(1))
+
         y, x = self.offset + self.cursor.y, self.cursor.x
 
         if x == self.width:
             return
 
-        self._update_line(y, x, self.lines[y][0][x + 1:].ljust(self.width - x, ' '))
+        self._update_line(y, x, self.lines[y][0][x + num:].ljust(self.width - x, ' '))
 
     def _ctl_scroll_down(self, match):
         if self.cursor.y < self.height - 1:
