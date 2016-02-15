@@ -487,11 +487,11 @@ class ConsoleWindow(Window):
         return 1
 
     def _ctl_cursor_home(self, match):
-        y, x = 0, 0
+        y, x = 1, 1
         if match.group(1):
             y, x = map(int, match.group(1).split(';'))
 
-        self._move_cursor_win(y, x)
+        self._move_cursor_win(y - 1, x - 1)
 
     def _ctl_cursor_up(self, match):
         offset = 1
