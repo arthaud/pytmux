@@ -61,16 +61,7 @@ def can_read(fd):
     return select.select([fd], [], [], 0) == ([fd], [], [])
 
 
-class Point:
-    def __init__(self, y, x):
-        self.y = y
-        self.x = x
-
-    def __repr__(self):
-        return 'Point(y=%d, x=%d)' % (self.y, self.x)
-
-
-class Cursor(Point):
+class Cursor:
     def __init__(self, y, x, visibility):
         self.y = y
         self.x = x
@@ -162,6 +153,15 @@ class ConsoleWindow(Window):
 
         self.redraw = True
 
+    def _log_state(self):
+        log.debug('offset: %d', self.offset)
+        log.debug('display_offset: %d', self.display_offset)
+        log.debug('cursor: (%d, %d)', self.cursor.x, self.cursor.x)
+        log.debug('scroll_area: (%d, %d)', self.scroll_area[0], self.scroll_area[1])
+        log.debug('lines = ')
+        for line in self.lines:
+            log.debug('  %r', line)
+
     def resize(self, height, width, begin_y, begin_x):
         prev_height, prev_width = self.size
         real_y, real_x = self._cursor_real_pos()
@@ -200,13 +200,7 @@ class ConsoleWindow(Window):
             self._insert_newline(real=False)
 
         self.redraw = True
-
-        log.debug('real_y = %d, real_x = %d', real_y, real_x)
-        log.debug('self.display_offset = %d, self.offset = %d, self.cursor = (%d, %d)',
-                  self.display_offset, self.offset, self.cursor.y, self.cursor.x)
-        log.debug('self.lines = ')
-        for line in self.lines:
-            log.debug('  %r', line)
+        self._log_state()
 
     def _rebuild_lines(self, prev_width, new_width):
         lines = []
@@ -260,19 +254,6 @@ class ConsoleWindow(Window):
 
         self.win.refresh()
 
-    def do_command(self, key):
-        log.debug('do_command(%r)', key)
-
-        #FIXME: For debugging purpose only
-        #if key == b'\x1b[A':
-        #    self.cursor.y = max(0, self.cursor.y - 1)
-        #elif key == b'\x1b[B':
-        #    self.cursor.y = min(self.height - 1, self.cursor.y + 1)
-        #elif key == b'\x1b[C':
-        #    self.cursor.x = min(self.width - 1, self.cursor.x + 1)
-        #elif key == b'\x1b[D':
-        #    self.cursor.x = max(0, self.cursor.x - 1)
-
     def write(self, data):
         '''Write data at the current cursor position'''
         assert self.offset + self.cursor.y < len(self.lines)
@@ -280,7 +261,7 @@ class ConsoleWindow(Window):
         if isinstance(data, bytes):
             data = data.decode('utf8', 'replace')
 
-        log.debug('write(%r)', data)
+        log.debug('write: %r', data)
 
         current = ''
         while data:
@@ -314,12 +295,7 @@ class ConsoleWindow(Window):
             data = data[remove:]
 
         self._write_line(current)
-
-        log.debug('self.display_offset = %d, self.offset = %d, self.cursor = (%d, %d)',
-                  self.display_offset, self.offset, self.cursor.y, self.cursor.x)
-        log.debug('self.lines = ')
-        for line in self.lines:
-            log.debug('  %r', line)
+        self._log_state()
 
     def _cursor_newline(self, real):
         '''Add a new line at the cursor position (if needed)
@@ -329,9 +305,11 @@ class ConsoleWindow(Window):
         '''
         self.cursor.x = 0
 
-        if self.cursor.y == self.scroll_area[1]: # scroll down
+        if self.cursor.y == self.scroll_area[1]:
+            # scroll down
             self._scroll_down(real=real)
         else:
+            # move the cursor down
             self.cursor.y = min(self.cursor.y + 1, self.height - 1)
 
             if self.offset + self.cursor.y > len(self.lines) - 1:
@@ -865,49 +843,7 @@ class ScreenManager:
 
             while True:
                 key = self.get_key()
-
                 if key:
-                    '''
-                    self.console.do_command(key)
-
-                    if key == b'\x04' or key == b'\x03': # EOF or Ctrl-C
-                        break
-                    elif key == b'+':
-                        self.console.scroll(+1)
-                    elif key == b'-':
-                        self.console.scroll(-1)
-                    elif key == b'*':
-                        self.console.deactivate_scroll()
-                    # FIXME: For debugging purpose only
-                    elif key == b'a':
-                        with open('/bin/ls', 'rb') as f:
-                            data = f.read(200)
-
-                        self.console.write(data)
-                    elif key == b'b':
-                        self.console.redraw = True
-                    elif key == b'c':
-                        self.console.write('a\n')
-                    elif key == b'd':
-                        self.console.write('123456789')
-                    elif key == b'e':
-                        self.console.write('\rabcd')
-                    elif key == b'f':
-                        self.console.write('\n'.join(map(str, range(40))))
-                    elif key == b'g':
-                        self.console.write('\tb\n \td\n')
-                    elif key == b'h':
-                        self.console.write('1234\n56789\x1b[20;15HZZZ')
-                    elif key == b'i':
-                        self.console.write('AAAA\nBBBB\x1b[AZ')
-                    elif key == b'j':
-                        self.console.write('\x1b[K')
-                    elif key == b'k':
-                        self.console.write('\x1b[2J')
-                    elif key == b'l':
-                        self.console.write(string.ascii_uppercase)
-                    '''
-
                     self.proc.stdin.write(key)
                     self.refresh()
 
