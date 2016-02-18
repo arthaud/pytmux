@@ -151,17 +151,22 @@ class ConsoleWindow(Window):
         # - the real window, where the cursor is and where writes are performed
         # - the display window. This is usually the real window except when you
         #     look at the history
-        self.display_offset = 0 # first line of the display window
+
         self.offset = 0 # first line of the real window
         self.cursor = Cursor(0, 0, # position in the real window
                              visibility=1)
+        self.scroll_area = 0, height - 1
+
+        self.display_offset = 0 # first line of the display window
         self.auto_scroll = True
+
         self.redraw = True
 
     def resize(self, height, width, begin_y, begin_x):
         prev_height, prev_width = self.size
         real_y, real_x = self._cursor_real_pos()
         super(ConsoleWindow, self).resize(height, width, begin_y, begin_x)
+        self.scroll_area = 0, height - 1
 
         if prev_height != height:
             diff = prev_height - height
@@ -324,22 +329,13 @@ class ConsoleWindow(Window):
         '''
         self.cursor.x = 0
 
-        if self.offset + self.cursor.y == len(self.lines) - 1: # last line
-            line_num = self.lines[-1][1]
-            if real:
-                line_num += 1
-            self.lines.append(['', line_num])
-
-        if self.cursor.y == self.height - 1: # scroll down
-            self.offset += 1
-
-            if self.auto_scroll:
-                self.display_offset = self.offset
-                self.redraw = True
+        if self.cursor.y == self.scroll_area[1]: # scroll down
+            self._scroll_down(real=real)
         else:
-            self.cursor.y += 1
+            self.cursor.y = min(self.cursor.y + 1, self.height - 1)
 
-        self._check_history_size()
+            if self.offset + self.cursor.y > len(self.lines) - 1:
+                self._insert_newline(real)
 
     def _insert_newline(self, real):
         '''Insert a new line at the end of the buffer
@@ -475,7 +471,7 @@ class ConsoleWindow(Window):
                            (r'^\x1bD', self._ctl_scroll_down),
                            (r'^\x1bM', self._ctl_scroll_up),
                            (r'^\x1b\[(\d+(;\d+)*)?m', lambda s: None),
-                           (r'^\x1b\[(\d+(;\d+)*)?r', lambda s: None),
+                           (r'^\x1b\[(\d+(;\d+)*)?r', self._ctl_scroll_area),
                            (r'^\x1b=', self._ctl_application_keypad),
                            (r'^\x1b>', self._ctl_normal_keypad),
                            (r'^\x1b(\)|\(|\*|\+)[a-zA-Z]', lambda s: None),
@@ -606,42 +602,75 @@ class ConsoleWindow(Window):
 
         self._update_line(y, x, self.lines[y][0][x + num:].ljust(self.width - x, ' '))
 
-    def _ctl_scroll_down(self, match):
-        if self.cursor.y < self.height - 1:
-            self._move_cursor_win(self.cursor.y + 1, self.cursor.x)
-            return
+    def _ctl_scroll_area(self, match):
+        top, down = 1, self.height
+        if match.group(1):
+            top, down = map(int, match.group(1).split(';'))
 
-        # shift all lines from self.offset by -1
-        for i in range(self.offset, self.offset + self.height - 1):
-            self.lines[i] = copy.copy(self.lines[i + 1])
+        down = max(min(down, self.height), 1)
+        top = max(min(top, down), 1)
 
-        self.lines[self.offset + self.height - 1][0] = ''
-        self.lines[self.offset + self.height - 1][1] += 1
+        self.scroll_area = top - 1, down - 1
+        self._move_cursor_win(0, 0)
+
+    def _scroll_down(self, real):
+        area_top, area_down = self.scroll_area
+
+        if area_top == 0 and area_down == self.height - 1: # usual scroll
+            self.offset += 1
+
+            if self.auto_scroll:
+                self.display_offset = self.offset
+
+            if self.offset + self.cursor.y > len(self.lines) - 1:
+                self._insert_newline(real)
+        else:
+            for i in range(self.offset + area_top,
+                           min(self.offset + area_down, len(self.lines) - 1)):
+                self.lines[i] = copy.copy(self.lines[i + 1])
+
+        self.lines[self.offset + area_down][0] = ''
+        num = self.lines[self.offset + area_down - 1][1] if self.offset + area_down > 0 else 0
+
+        if real:
+            num += 1
+        self.lines[self.offset + area_down][1] = num
+        last = None
+
+        for i in range(self.offset + area_down + 1, len(self.lines)):
+            if last != self.lines[i][1]:
+                num += 1
+
+            last = self.lines[i][1]
+            self.lines[i][1] = num
 
         self.redraw = True
 
-    def _ctl_scroll_up(self, match):
-        if self.cursor.y > 0:
-            self._move_cursor_win(self.cursor.y - 1, self.cursor.x)
+    def _ctl_scroll_down(self, match):
+        if self.cursor.y != self.scroll_area[1]:
+            self._move_cursor_win(self.cursor.y + 1, self.cursor.x)
             return
 
-        # shift all lines from self.offset by 1
-        for i in range(min(len(self.lines) - 1, self.offset + self.height - 2),
-                       self.offset - 1,
+        self._scroll_down(real=True)
+
+    def _scroll_up(self):
+        area_top, area_down = self.scroll_area
+
+        for i in range(min(self.offset + area_down - 1, len(self.lines) - 1),
+                       self.offset + area_top - 1,
                        -1):
             if i == len(self.lines) - 1: # last line
                 self.lines.append(copy.copy(self.lines[i]))
             else:
                 self.lines[i + 1] = copy.copy(self.lines[i])
 
-        self.lines[self.offset][0] = ''
+        self.lines[self.offset + area_top][0] = ''
+        num = self.lines[self.offset + area_top - 1][1] + 1 if self.offset + area_top > 0 else 0
 
-        # update real line numbers
-        num = self.lines[self.offset - 1][1] + 1 if self.offset > 0 else 0
-        self.lines[self.offset][1] = num
+        self.lines[self.offset + area_top][1] = num
         last_num = None
 
-        for i in range(self.offset + 1, len(self.lines)):
+        for i in range(self.offset + area_top + 1, len(self.lines)):
             if last_num != self.lines[i][1]:
                 num += 1
 
@@ -649,6 +678,13 @@ class ConsoleWindow(Window):
             self.lines[i][1] = num
 
         self.redraw = True
+
+    def _ctl_scroll_up(self, match):
+        if self.cursor.y != self.scroll_area[0]:
+            self._move_cursor_win(self.cursor.y - 1, self.cursor.x)
+            return
+
+        self._scroll_up()
 
     def _ctl_application_keypad(self, match):
         self.win.keypad(1)
