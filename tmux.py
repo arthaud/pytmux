@@ -453,7 +453,8 @@ class ConsoleWindow(Window):
                            (r'^\x1b=', self._ctl_application_keypad),
                            (r'^\x1b>', self._ctl_normal_keypad),
                            (r'^\x1b(\)|\(|\*|\+)[a-zA-Z]', lambda s: None),
-                           (r'^\x1b\[\?(\d+)(h|l)', self._ctl_set_reset)):
+                           (r'^\x1b\[(\d+)(h|l)', self._ctl_set_mode),
+                           (r'^\x1b\[\?(\d+)(h|l)', self._ctl_private_set_mode)):
             match = re.search(regex, data)
             if match:
                 log.debug('control sequence %r -> %s', match.group(0), fun.__name__)
@@ -463,9 +464,19 @@ class ConsoleWindow(Window):
         log.error('Unable to parse control sequence %r', data[:16])
         return 1
 
-    def _ctl_set_reset(self, match):
+    def _ctl_set_mode(self, match):
         num = int(match.group(1))
-        set = match.group(2) == 'h'
+        val = match.group(2) == 'h'
+
+        if num == 4:
+            assert not val, 'insert mode not supported'
+            return # ignored
+
+        log.error('Unknow control sequence %r', match.group(0))
+
+    def _ctl_private_set_mode(self, match):
+        num = int(match.group(1))
+        val = match.group(2) == 'h'
 
         if num in (1, 12, 25, 1049, 2004):
             return # ignored
