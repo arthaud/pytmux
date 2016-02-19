@@ -19,7 +19,6 @@ import pty
 import re
 import select
 import signal
-import string
 import struct
 import subprocess
 import sys
@@ -93,22 +92,21 @@ class Window:
         raise NotImplementedError
 
 
-# TODO: Should we remove it?
 class Colors:
     def __init__(self):
-        self.pairs = {}
+        self.attr_map = {}
         self.next = 1
 
-    def get(self, fg, bg):
-        if (fg, bg) in self.pairs:
-            return self.pairs[fg, bg]
+    def attr(self, fg, bg=-1):
+        if (fg, bg) in self.attr_map:
+            return self.attr_map[fg, bg]
 
         pair_num = self.next
         self.next += 1
 
         curses.init_pair(pair_num, fg, bg)
-        self.pairs[fg, bg] = curses.color_pair(pair_num)
-        return self.pairs[fg, bg]
+        self.attr_map[fg, bg] = curses.color_pair(pair_num)
+        return self.attr_map[fg, bg]
 
 colors = Colors()
 
@@ -122,10 +120,116 @@ class BannerWindow(Window):
         banner = left + ' ' * (self.width - len(left) - len(right)) + right
 
         addstr(self.win, 0, 0, banner,
-               colors.get(curses.COLOR_BLACK, curses.COLOR_BLUE))
+               colors.attr(curses.COLOR_BLACK, curses.COLOR_BLUE))
 
         self.win.refresh()
         self.win.leaveok(0)
+
+
+class FormattedString:
+    def __init__(self, text=None, attr=0, fg=-1, bg=-1):
+        if text:
+            self._elements = [(text, attr, fg, bg)]
+        else:
+            self._elements = []
+
+    def __len__(self):
+        return sum(len(text) for text, _, _, _ in self._elements)
+
+    def __bool__(self):
+        return bool(self._elements)
+
+    def _clone(self):
+        o = FormattedString()
+        o._elements = copy.copy(self._elements)
+        return o
+
+    def _add(self, o):
+        assert isinstance(o, FormattedString)
+
+        for text, attr, fg, bg in o._elements:
+            if self._elements and self._elements[-1][1:] == (attr, fg, bg):
+                self._elements[-1] = (self._elements[-1][0] + text, attr, fg, bg)
+            else:
+                self._elements.append((text, attr, fg, bg))
+
+    def __add__(self, s):
+        o = self._clone()
+        o._add(s)
+        return o
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            index = index if index >= 0 else len(self) + index
+            if not (0 <= index < len(self)):
+                raise IndexError
+
+            for text, attr, fg, bg in self._elements:
+                if index < len(text):
+                    return FormattedString(text[index], attr, fg, bg)
+                else:
+                    index -= len(text)
+        elif isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            assert step == 1
+
+            o = FormattedString()
+            for text, attr, fg, bg in self._elements:
+                if start >= len(text):
+                    start -= len(text)
+                    stop -= len(text)
+                else:
+                    text = text[start:]
+                    stop -= start
+                    start = 0
+
+                    if stop <= len(text):
+                        text = text[:stop]
+                        o._add(FormattedString(text, attr, fg, bg))
+                        return o
+                    else:
+                        o._add(FormattedString(text, attr, fg, bg))
+                        stop -= len(text)
+
+            return o
+        else:
+            raise TypeError('index must be int or slice')
+
+    def ljust(self, n, fillchar=' ', attr=0, fg=-1, bg=-1):
+        m = len(self)
+
+        if n > m:
+            return self + FormattedString(fillchar * (n - m), attr, fg, bg)
+        else:
+            return self
+
+    def rstrip(self, chars=None):
+        o = self._clone()
+
+        while o._elements:
+            text, attr, fg, bg = o._elements[-1]
+
+            if bg != -1:
+                return o
+
+            text = text.rstrip(chars)
+
+            if not text:
+                o._elements.pop()
+            else:
+                o._elements[-1] = (text, attr, fg, bg)
+                return o
+
+        return o
+
+    def __repr__(self):
+        return 'FormattedString(%r)' % self._elements
+
+
+def add_formatted_str(win, y, x, s):
+    for text, attr, fg, bg in s._elements:
+        addstr(win, y, x, text, colors.attr(fg, bg) | attr)
+        x += len(text)
 
 
 class ConsoleWindow(Window):
@@ -135,7 +239,7 @@ class ConsoleWindow(Window):
 
         # the buffer
         self.lines = []
-        self.lines.append(['', # line content
+        self.lines.append([FormattedString(), # line content
                            0]) # real line number
 
         # There are two windows:
@@ -147,6 +251,9 @@ class ConsoleWindow(Window):
         self.cursor = Cursor(0, 0, # position in the real window
                              visibility=1)
         self.scroll_area = 0, height - 1
+        self.attr = 0
+        self.fg = -1
+        self.bg = -1
 
         self.display_offset = 0 # first line of the display window
         self.auto_scroll = True
@@ -208,11 +315,12 @@ class ConsoleWindow(Window):
 
         for line, num in self.lines[1:]:
             if current_num == num: # same line
-                current_line += ' ' * ((prev_width - len(current_line) % prev_width) % prev_width)
+                padding = (prev_width - len(current_line) % prev_width) % prev_width
+                current_line += FormattedString(' ' * padding)
                 current_line += line
             else:
                 if not current_line:
-                    lines.append(['', current_num])
+                    lines.append([FormattedString(), current_num])
                 else:
                     while current_line:
                         lines.append([current_line[:new_width], current_num])
@@ -221,7 +329,7 @@ class ConsoleWindow(Window):
                 current_line, current_num = line, num
 
         if not current_line:
-            lines.append(['', current_num])
+            lines.append([FormattedString(), current_num])
         else:
             while current_line:
                 lines.append([current_line[:new_width], current_num])
@@ -234,9 +342,9 @@ class ConsoleWindow(Window):
             self.win.leaveok(1)
 
             for i in range(self.display_offset, self.display_offset + self.height):
-                line = self.lines[i][0] if i < len(self.lines) else ''
+                line = self.lines[i][0] if i < len(self.lines) else FormattedString()
                 line = line.ljust(self.width, ' ')
-                addstr(self.win, i - self.display_offset, 0, line)
+                add_formatted_str(self.win, i - self.display_offset, 0, line)
 
             self.redraw = False
             self.win.leaveok(0)
@@ -326,7 +434,7 @@ class ConsoleWindow(Window):
         line_num = self.lines[-1][1]
         if real:
             line_num += 1
-        self.lines.append(['', line_num])
+        self.lines.append([FormattedString(), line_num])
 
         self._check_history_size()
 
@@ -348,10 +456,13 @@ class ConsoleWindow(Window):
             self.offset -= nb
 
     def _update_line(self, y, x, data):
-        assert isinstance(data, str)
+        assert isinstance(data, (str, FormattedString))
         assert 0 <= y < len(self.lines)
         assert 0 <= x < self.width
         assert 0 <= x + len(data) <= self.width
+
+        if isinstance(data, str):
+            data = FormattedString(data)
 
         # update buffer
         self.lines[y][0] = (self.lines[y][0][:x].ljust(x, ' ') +
@@ -360,7 +471,7 @@ class ConsoleWindow(Window):
 
         # update screen directly (only if the window won't be redraw completely)
         if not self.redraw and self.display_offset <= y < self.display_offset + self.height:
-            addstr(self.win, y - self.display_offset, x, data)
+            add_formatted_str(self.win, y - self.display_offset, x, data)
 
     def _write_line(self, data):
         assert isinstance(data, str)
@@ -376,7 +487,7 @@ class ConsoleWindow(Window):
             line = data[:self.width - x]
             data = data[self.width - x:]
 
-            self._update_line(y, x, line)
+            self._update_line(y, x, FormattedString(line, self.attr, self.fg, self.bg))
 
             self.cursor.x += len(line)
 
@@ -446,12 +557,12 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[X', self._ctl_erase_char),
                            (r'^\x1b\[M', self._ctl_erase_entire_line),
                            (r'^\x1b\[(\d+)?P', self._ctl_delete_char),
+                           (r'^\x1b\[(\d+(;\d+)*)?r', self._ctl_scroll_area),
                            (r'^\x1bD', self._ctl_scroll_down),
                            (r'^\x1bM', self._ctl_scroll_up),
-                           (r'^\x1b\[(\d+(;\d+)*)?m', lambda s: None),
-                           (r'^\x1b\[(\d+(;\d+)*)?r', self._ctl_scroll_area),
                            (r'^\x1b=', self._ctl_application_keypad),
                            (r'^\x1b>', self._ctl_normal_keypad),
+                           (r'^\x1b\[(\d+(;\d+)*)?m', self._ctl_attr),
                            (r'^\x1b(\)|\(|\*|\+)[a-zA-Z]', lambda s: None),
                            (r'^\x1b\[(\d+)(h|l)', self._ctl_set_mode),
                            (r'^\x1b\[\?(\d+)(h|l)', self._ctl_private_set_mode)):
@@ -482,6 +593,27 @@ class ConsoleWindow(Window):
             return # ignored
 
         log.error('Unknow control sequence %r', match.group(0))
+
+    def _ctl_attr(self, match):
+        s = match.group(1) or '0'
+
+        for attr in map(int, s.split(';')):
+            if attr == 0:
+                self.attr = 0
+                self.fg = self.bg = -1
+            elif attr < 10:
+                self.attr |= {
+                    1: curses.A_BOLD,
+                    2: curses.A_DIM,
+                    4: curses.A_UNDERLINE,
+                    5: curses.A_BLINK,
+                    7: curses.A_REVERSE,
+                    8: curses.A_INVIS
+                }[attr]
+            elif 30 <= attr <= 37:
+                self.fg = attr - 30
+            elif 40 <= attr <= 47:
+                self.bg = attr - 40
 
     def _ctl_cursor_home(self, match):
         y, x = 1, 1
@@ -544,11 +676,11 @@ class ConsoleWindow(Window):
         y = self.offset + self.cursor.y
 
         # update buffer
-        self.lines[y][0] = ''
+        self.lines[y][0] = FormattedString()
 
         # update screen directly (only if the window won't be redraw completely)
         if not self.redraw and self.display_offset <= y < self.display_offset + self.height:
-            addstr(self.win, y - self.display_offset, 0, ' ' * self.width)
+            add_formatted_str(self.win, y - self.display_offset, 0, FormattedString(' ' * self.width))
 
     def _ctl_erase_down(self, match):
         y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
@@ -562,9 +694,9 @@ class ConsoleWindow(Window):
         y, x = self.offset + self.cursor.y, min(self.width - 1, self.cursor.x)
 
         # update buffer
-        self.lines[y][0] = ' ' * (x + 1) + self.lines[y][0][x + 1:]
+        self.lines[y][0] = FormattedString(' ' * (x + 1)) + self.lines[y][0][x + 1:]
         for i in range(self.offset, y):
-            self.lines[i][0] = ''
+            self.lines[i][0] = FormattedString()
         self.redraw = True
 
     def _ctl_erase_screen(self, match):
@@ -618,7 +750,7 @@ class ConsoleWindow(Window):
                            min(self.offset + area_down, len(self.lines) - 1)):
                 self.lines[i] = copy.copy(self.lines[i + 1])
 
-        self.lines[self.offset + area_down][0] = ''
+        self.lines[self.offset + area_down][0] = FormattedString()
         num = self.lines[self.offset + area_down - 1][1] if self.offset + area_down > 0 else 0
 
         if real:
@@ -653,7 +785,7 @@ class ConsoleWindow(Window):
             else:
                 self.lines[i + 1] = copy.copy(self.lines[i])
 
-        self.lines[self.offset + area_top][0] = ''
+        self.lines[self.offset + area_top][0] = FormattedString()
         num = self.lines[self.offset + area_top - 1][1] + 1 if self.offset + area_top > 0 else 0
 
         self.lines[self.offset + area_top][1] = num
