@@ -11,6 +11,7 @@ from datetime import datetime
 import copy
 import curses
 import fcntl
+import json
 import locale
 import logging
 import os
@@ -23,6 +24,7 @@ import struct
 import subprocess
 import sys
 import termios
+import time
 import tty
 import unicodedata
 
@@ -30,6 +32,7 @@ logging.basicConfig(filename='tmux.log',
                     filemode='w',
                     level=logging.DEBUG)
 log = logging.getLogger('tmux')
+replay = logging.getLogger('replay')
 
 
 def get_hw(fd):
@@ -260,6 +263,8 @@ class ConsoleWindow(Window):
 
         self.redraw = True
 
+        replay.info('%d:SIZE %d %d', time.time(), self.height, self.width)
+
     def _log_state(self):
         log.debug('offset: %d', self.offset)
         log.debug('display_offset: %d', self.display_offset)
@@ -370,6 +375,7 @@ class ConsoleWindow(Window):
             data = data.decode('utf8', 'replace')
 
         log.debug('write: %r', data)
+        replay.info('%d:WRITE %s', time.time(), json.dumps(data))
 
         current = ''
         while data:
