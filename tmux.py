@@ -388,6 +388,8 @@ class ConsoleWindow(Window):
                 self._write_line(current)
                 remove = self._control_seq(data)
                 current = ''
+            elif c == '\a':
+                pass
             elif c == '\b':
                 self._write_line(current)
                 self.cursor.x = max(0, self.cursor.x - 1)
@@ -572,11 +574,13 @@ class ConsoleWindow(Window):
                            (r'^\x1b>', self._ctl_normal_keypad),
                            (r'^\x1b\[(\d+(;\d+)*)?m', self._ctl_attr),
                            (r'^\x1b(\)|\(|\*|\+)[a-zA-Z]', lambda s: None),
-                           (r'^\x1b\[(\d+)(h|l)', self._ctl_set_mode),
-                           (r'^\x1b\[\?(\d+)(h|l)', self._ctl_private_set_mode),
+                           (r'^\x1b\]\d+;', lambda s: None),
+                           (r'^\x1b\[(\d+(;\d+)*)(h|l)', self._ctl_set_mode),
+                           (r'^\x1b\[\?(\d+(;\d+)*)(h|l)', self._ctl_private_set_mode),
                            (r'^\x1b\[c', self._ctl_query_code),
                            (r'^\x1b\[5n', self._ctl_query_status),
-                           (r'^\x1b\[6n', self._ctl_query_cursor_pos)):
+                           (r'^\x1b\[6n', self._ctl_query_cursor_pos),
+                           (r'^\x1b\[>c', self._ctl_query_term_id)):
             match = re.search(regex, data)
             if match:
                 log.debug('control sequence %r -> %s', match.group(0), fun.__name__)
@@ -587,23 +591,23 @@ class ConsoleWindow(Window):
         return 1
 
     def _ctl_set_mode(self, match):
-        num = int(match.group(1))
-        val = match.group(2) == 'h'
+        val = match.groups()[-1] == 'h'
 
-        if num == 4:
-            assert not val, 'insert mode not supported'
-            return # ignored
-
-        log.error('Unknow control sequence %r', match.group(0))
+        for num in map(int, match.group(1).split(';')):
+            if num == 4:
+                assert not val, 'insert mode not supported'
+                continue # ignored
+            else:
+                log.error('Unknow control sequence %r', match.group(0))
 
     def _ctl_private_set_mode(self, match):
-        num = int(match.group(1))
-        val = match.group(2) == 'h'
+        val = match.groups()[-1] == 'h'
 
-        if num in (1, 12, 25, 1049, 2004):
-            return # ignored
-
-        log.error('Unknow control sequence %r', match.group(0))
+        for num in map(int, match.group(1).split(';')):
+            if num in (1, 12, 25, 1049, 2004):
+                continue # ignored
+            else:
+                log.error('Unknow control sequence %r', match.group(0))
 
     def _ctl_attr(self, match):
         s = match.group(1) or '0'
@@ -902,6 +906,12 @@ class ConsoleWindow(Window):
             return
 
         self.reply_query('\x1b[%d;%dR' % (self.cursor.y + 1, self.cursor.x + 1))
+
+    def _ctl_query_term_id(self, match):
+        if not self.reply_query:
+            return
+
+        self.reply_query('\x1b[>84;0;0c')
 
     def scroll(self, offset):
         if not self.display_offset + offset >= 0:
