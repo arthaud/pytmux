@@ -47,6 +47,9 @@ def replay(f, check_height=True, check_width=True):
         print('error: wrong terminal width (expected %d, got %d)' % (width, real_width), file=sys.stderr)
         exit(2)
 
+    sys.stdout.write('\x1b[H\x1b[2J')
+    sys.stdout.flush()
+
     # play
     while True:
         line = f.readline()
