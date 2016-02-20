@@ -14,6 +14,7 @@ import fcntl
 import json
 import locale
 import logging
+import math
 import os
 import platform
 import pty
@@ -602,24 +603,85 @@ class ConsoleWindow(Window):
 
     def _ctl_attr(self, match):
         s = match.group(1) or '0'
+        it = map(int, s.split(';'))
 
-        for attr in map(int, s.split(';')):
-            if attr == 0:
-                self.attr = 0
-                self.fg = self.bg = -1
-            elif attr < 10:
-                self.attr |= {
-                    1: curses.A_BOLD,
-                    2: curses.A_DIM,
-                    4: curses.A_UNDERLINE,
-                    5: curses.A_BLINK,
-                    7: curses.A_REVERSE,
-                    8: curses.A_INVIS
-                }[attr]
-            elif 30 <= attr <= 37:
-                self.fg = attr - 30
-            elif 40 <= attr <= 47:
-                self.bg = attr - 40
+        try:
+            while True:
+                attr = next(it)
+
+                if attr == 0:
+                    self.attr = 0
+                    self.fg = self.bg = -1
+                elif attr < 10:
+                    self.attr |= {
+                        1: curses.A_BOLD,
+                        2: curses.A_DIM,
+                        4: curses.A_UNDERLINE,
+                        5: curses.A_BLINK,
+                        7: curses.A_REVERSE,
+                        8: curses.A_INVIS
+                    }.get(attr, 0)
+                elif 20 <= attr < 29:
+                    self.attr &= ~({
+                        2: curses.A_BOLD | curses.A_DIM,
+                        4: curses.A_UNDERLINE,
+                        5: curses.A_BLINK,
+                        7: curses.A_REVERSE,
+                        8: curses.A_INVIS
+                    }.get(attr, 0))
+                elif 30 <= attr <= 37:
+                    self.fg = attr - 30
+                elif attr == 39:
+                    self.fg = -1
+                elif 40 <= attr <= 47:
+                    self.bg = attr - 40
+                elif attr == 49:
+                    self.bg = -1
+                elif attr in (38, 48):
+                    kind = next(it)
+
+                    if kind == 2:
+                        r = next(it)
+                        g = next(it)
+                        b = next(it)
+                    elif kind == 5:
+                        rgb = next(it)
+
+                        if rgb < 16:
+                            continue
+                        elif 16 <= rgb < 232:
+                            rgb -= 16
+                            r = (rgb // 36) * 256 // 6
+                            g = ((rgb // 6) % 6) * 256 // 6
+                            b = (rgb % 6) * 256 // 6
+                        else:
+                            r = g = b = (rgb - 232) * 256 // 23
+                    else:
+                        log.error('Unknow control sequence %r', match.group(0))
+                        continue
+
+                    if attr == 38:
+                        self.fg = self._approximate_color(r, g, b)
+                    else:
+                        self.bg = self._approximate_color(r, g, b)
+
+        except StopIteration:
+            pass
+
+    def _approximate_color(self, r, g, b):
+        colors = [
+            (curses.COLOR_BLACK, (0, 0, 0)),
+            (curses.COLOR_RED, (174, 0, 0)),
+            (curses.COLOR_GREEN, (0, 174, 0)),
+            (curses.COLOR_YELLOW, (174, 174, 0)),
+            (curses.COLOR_BLUE, (0, 0, 174)),
+            (curses.COLOR_MAGENTA, (174, 0, 174)),
+            (curses.COLOR_CYAN, (0, 174, 174)),
+            (curses.COLOR_WHITE, (174, 174, 174)),
+        ]
+
+        color = min(colors, key=lambda c: math.sqrt((r - c[1][0])**2 + (g - c[1][1])**2 + (b - c[1][2])**2))
+        return color[0]
 
     def _ctl_cursor_home(self, match):
         y, x = 1, 1
