@@ -237,9 +237,10 @@ def add_formatted_str(win, y, x, s):
 
 
 class ConsoleWindow(Window):
-    def __init__(self, height, width, begin_y, begin_x, history_size):
+    def __init__(self, height, width, begin_y, begin_x, history_size, reply_query=None):
         super(ConsoleWindow, self).__init__(height, width, begin_y, begin_x)
         self.history_size = history_size
+        self.reply_query = reply_query
 
         # the buffer
         self.lines = []
@@ -572,7 +573,10 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[(\d+(;\d+)*)?m', self._ctl_attr),
                            (r'^\x1b(\)|\(|\*|\+)[a-zA-Z]', lambda s: None),
                            (r'^\x1b\[(\d+)(h|l)', self._ctl_set_mode),
-                           (r'^\x1b\[\?(\d+)(h|l)', self._ctl_private_set_mode)):
+                           (r'^\x1b\[\?(\d+)(h|l)', self._ctl_private_set_mode),
+                           (r'^\x1b\[c', self._ctl_query_code),
+                           (r'^\x1b\[5n', self._ctl_query_status),
+                           (r'^\x1b\[6n', self._ctl_query_cursor_pos)):
             match = re.search(regex, data)
             if match:
                 log.debug('control sequence %r -> %s', match.group(0), fun.__name__)
@@ -881,6 +885,24 @@ class ConsoleWindow(Window):
     def _ctl_normal_keypad(self, match):
         self.win.keypad(0)
 
+    def _ctl_query_code(self, match):
+        if not self.reply_query:
+            return
+
+        self.reply_query('\x1b[?1;2c')
+
+    def _ctl_query_status(self, match):
+        if not self.reply_query:
+            return
+
+        self.reply_query('\x1b[0n')
+
+    def _ctl_query_cursor_pos(self, match):
+        if not self.reply_query:
+            return
+
+        self.reply_query('\x1b[%d;%dR' % (self.cursor.y + 1, self.cursor.x + 1))
+
     def scroll(self, offset):
         if not self.display_offset + offset >= 0:
             return
@@ -1046,6 +1068,7 @@ class ScreenManager:
         old_sigcont = signal.signal(signal.SIGCONT, self.sigcont) # redraw after being suspended
 
         self.proc = Process(os.environ.get('SHELL', '/bin/sh'))
+        self.console.reply_query = lambda s: self.proc.stdin.write(s.encode('utf8'))
         set_hw(self.proc.stdout, self.console.height, self.console.width)
         self.proc.send_signal(signal.SIGWINCH)
 
