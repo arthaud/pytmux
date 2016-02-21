@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 '''
 A simple tmux clone in python using curses
-
-Notes:
-    To follow curses convention, we use (y, x) and not (x, y)
-    We need to call leaveok(1) before each call to refresh() to avoid some blinks
 '''
 
 from datetime import datetime
@@ -117,7 +113,7 @@ colors = Colors()
 
 class BannerWindow(Window):
     def refresh(self):
-        self.win.leaveok(1)
+        self.win.leaveok(1) # avoid cursor blinking
         left = '[0] tmux.py'
         right = '"%s" %s' % (platform.node(),
                              datetime.now().strftime('%H:%M %d-%m-%Y'))
@@ -158,6 +154,11 @@ class FormattedString:
                 self._elements.append((text, attr, fg, bg))
 
     def __add__(self, s):
+        if not self:
+            return s
+        if not s:
+            return self
+
         o = self._clone()
         o._add(s)
         return o
@@ -169,31 +170,36 @@ class FormattedString:
                 raise IndexError
 
             for text, attr, fg, bg in self._elements:
-                if index < len(text):
+                n = len(text)
+
+                if index < n:
                     return FormattedString(text[index], attr, fg, bg)
                 else:
-                    index -= len(text)
+                    index -= n
         elif isinstance(index, slice):
             start, stop, step = index.indices(len(self))
             assert step == 1
 
             o = FormattedString()
             for text, attr, fg, bg in self._elements:
-                if start >= len(text):
-                    start -= len(text)
-                    stop -= len(text)
+                n = len(text)
+
+                if start >= n:
+                    start -= n
+                    stop -= n
                 else:
                     text = text[start:]
+                    n = len(text)
                     stop -= start
                     start = 0
 
-                    if stop <= len(text):
+                    if stop <= n:
                         text = text[:stop]
                         o._add(FormattedString(text, attr, fg, bg))
                         return o
                     else:
                         o._add(FormattedString(text, attr, fg, bg))
-                        stop -= len(text)
+                        stop -= n
 
             return o
         else:
@@ -232,7 +238,7 @@ class FormattedString:
 
 def add_formatted_str(win, y, x, s):
     for text, attr, fg, bg in s._elements:
-        addstr(win, y, x, text, colors.attr(fg, bg) | attr)
+        addstr(win, y, x, text, attr | colors.attr(fg, bg))
         x += len(text)
 
 
@@ -241,6 +247,8 @@ class ConsoleWindow(Window):
         super(ConsoleWindow, self).__init__(height, width, begin_y, begin_x)
         self.history_size = history_size
         self.reply_query = reply_query
+
+        replay.info('%d:SIZE %d %d', time.time(), self.height, self.width)
 
         # the buffer
         self.lines = []
@@ -264,8 +272,6 @@ class ConsoleWindow(Window):
         self.auto_scroll = True
 
         self.redraw = True
-
-        replay.info('%d:SIZE %d %d', time.time(), self.height, self.width)
 
     def _log_state(self):
         log.debug('offset: %d', self.offset)
@@ -346,7 +352,7 @@ class ConsoleWindow(Window):
 
     def refresh(self):
         if self.redraw:
-            self.win.leaveok(1)
+            self.win.leaveok(1) # avoid cursor blinking
 
             for i in range(self.display_offset, self.display_offset + self.height):
                 line = self.lines[i][0] if i < len(self.lines) else FormattedString()
@@ -486,7 +492,7 @@ class ConsoleWindow(Window):
     def _write_line(self, data):
         assert isinstance(data, str)
         assert self.offset + self.cursor.y < len(self.lines)
-        assert all(c not in data for c in ('\b', '\t', '\n', '\r', '\x1b'))
+        assert all(c not in data for c in ('\x1b', '\a', '\b', '\t', '\n', '\r'))
 
         while data:
             if self.cursor.x == self.width:
@@ -541,15 +547,11 @@ class ConsoleWindow(Window):
         self.cursor.y, self.cursor.x = y, x
 
     def _expand_tab(self, current):
-        assert self.offset + self.cursor.y < len(self.lines)
-
         _, x = self._cursor_real_pos() # num of chars before the cursor
         x += len(current) # num of chars after the cursor
         return current + ' ' * (8 - x % 8)
 
     def _control_seq(self, data):
-        assert self.offset + self.cursor.y < len(self.lines)
-
         for regex, fun in ((r'^\x1b\[(\d+;\d+)?H', self._ctl_cursor_home),
                            (r'^\x1b\[(\d+;\d+)?f', self._ctl_cursor_home),
                            (r'^\x1b\[(\d+)?A', self._ctl_cursor_up),
@@ -689,7 +691,8 @@ class ConsoleWindow(Window):
             (curses.COLOR_WHITE, (174, 174, 174)),
         ]
 
-        color = min(colors, key=lambda c: math.sqrt((r - c[1][0])**2 + (g - c[1][1])**2 + (b - c[1][2])**2))
+        color = min(colors,
+                    key=lambda c: math.sqrt((r - c[1][0])**2 + (g - c[1][1])**2 + (b - c[1][2])**2))
         return color[0]
 
     def _ctl_cursor_home(self, match):
