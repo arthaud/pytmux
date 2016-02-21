@@ -566,7 +566,7 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[0?J', self._ctl_erase_down),
                            (r'^\x1b\[1J', self._ctl_erase_up),
                            (r'^\x1b\[2J', self._ctl_erase_screen),
-                           (r'^\x1b\[X', self._ctl_erase_char),
+                           (r'^\x1b\[(\d+)?X', self._ctl_erase_char),
                            (r'^\x1b\[M', self._ctl_erase_entire_line),
                            (r'^\x1b\[(\d+)?L', self._ctl_insert_line),
                            (r'^\x1b\[(\d+)?P', self._ctl_delete_char),
@@ -784,12 +784,16 @@ class ConsoleWindow(Window):
         self._ctl_erase_down(match)
 
     def _ctl_erase_char(self, match):
+        num = 1
+        if match.group(1):
+            num = int(match.group(1))
+
         y, x = self.offset + self.cursor.y, self.cursor.x
 
         if x == self.width:
             return
 
-        self._update_line(y, x, ' ')
+        self._update_line(y, x, ' ' * num)
 
     def _ctl_insert_line(self, match):
         num = 1
