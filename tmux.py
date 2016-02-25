@@ -970,15 +970,13 @@ class ConsoleWindow(Window):
 class Process:
     def __init__(self, args, env=None):
         # validate parameters
-        if not isinstance(args, str):
+        if not isinstance(args, list):
             args = [args]
 
         env = env or os.environ
 
         # open a new pty
         master, slave = pty.openpty()
-        tty.setraw(master)
-        tty.setraw(slave)
 
         # launch subprocess
         self.proc = subprocess.Popen(args=args,
@@ -1138,11 +1136,17 @@ class ScreenManager:
                     break
 
                 if can_read(self.proc.stdout):
-                    self.console.write(self.proc.stdout.read(4096))
+                    try:
+                        self.console.write(self.proc.stdout.read(4096))
+                    except OSError:
+                        pass
                     self.refresh()
 
                 if can_read(self.proc.stderr):
-                    self.console.write(self.proc.stderr.read(4096))
+                    try:
+                        self.console.write(self.proc.stderr.read(4096))
+                    except OSError:
+                        pass
                     self.refresh()
 
                 curses.napms(5)
