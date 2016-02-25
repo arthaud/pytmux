@@ -22,7 +22,6 @@ import subprocess
 import sys
 import termios
 import time
-import tty
 import unicodedata
 
 logging.basicConfig(filename='tmux.log',
@@ -1071,6 +1070,7 @@ class ScreenManager:
         self.banner = BannerWindow(1, width, height - 1, 0)
         self.console = ConsoleWindow(height - 1, width, 0, 0, 200)
         self.resize_event = False
+        self.int_event = False
 
     def refresh(self):
         self.screen.leaveok(1)
@@ -1102,6 +1102,9 @@ class ScreenManager:
 
         if can_read(fd):
             return os.read(fd, 1024)
+        elif self.int_event:
+            self.int_event = False
+            return bytes([termios.CINTR])
         else:
             return None
 
@@ -1111,9 +1114,13 @@ class ScreenManager:
     def sigcont(self, *args):
         self.resize_event = True
 
+    def sigint(self, *args):
+        self.int_event = True
+
     def main_loop(self):
         old_sigwinch = signal.signal(signal.SIGWINCH, self.sigwinch) # window resized
         old_sigcont = signal.signal(signal.SIGCONT, self.sigcont) # redraw after being suspended
+        old_sigint = signal.signal(signal.SIGINT, self.sigint) # Ctrl-C
 
         self.proc = Process(os.environ.get('SHELL', '/bin/sh'))
         self.console.reply_query = lambda s: self.proc.stdin.write(s.encode('utf8'))
@@ -1153,6 +1160,7 @@ class ScreenManager:
         finally:
             signal.signal(signal.SIGWINCH, old_sigwinch)
             signal.signal(signal.SIGCONT, old_sigcont)
+            signal.signal(signal.SIGINT, old_sigint)
 
             if self.proc.poll() is None:
                 self.proc.kill()
