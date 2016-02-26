@@ -646,7 +646,7 @@ class ConsoleWindow(Window):
                         5: curses.A_BLINK,
                         7: curses.A_REVERSE,
                         8: curses.A_INVIS
-                    }.get(attr, 0))
+                    }.get(attr - 20, 0))
                 elif 30 <= attr <= 37:
                     self.fg = attr - 30
                 elif attr == 39:
