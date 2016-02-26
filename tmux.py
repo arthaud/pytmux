@@ -571,6 +571,7 @@ class ConsoleWindow(Window):
                            (r'^\x1b\[0?J', self._ctl_erase_down),
                            (r'^\x1b\[1J', self._ctl_erase_up),
                            (r'^\x1b\[2J', self._ctl_erase_screen),
+                           (r'^\x1b\[(\d+)?@', self._ctl_erase_char),
                            (r'^\x1b\[(\d+)?X', self._ctl_erase_char),
                            (r'^\x1b\[(\d+)?L', self._ctl_insert_line),
                            (r'^\x1b\[(\d+)?P', self._ctl_delete_char),
