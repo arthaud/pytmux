@@ -358,6 +358,12 @@ class ConsoleWindow(Window):
                 line = line.ljust(self.width, ' ')
                 add_formatted_str(self.win, i - self.display_offset, 0, line)
 
+            if not self.auto_scroll:
+                text = FormattedString('[%d/%d]' % (self.offset - self.display_offset, self.offset),
+                                       fg=curses.COLOR_BLACK,
+                                       bg=curses.COLOR_BLUE)
+                add_formatted_str(self.win, 0, self.width - len(text), text)
+
             self.redraw = False
             self.win.leaveok(0)
 
@@ -953,14 +959,11 @@ class ConsoleWindow(Window):
         self.reply_query('\x1b[>84;0;0c')
 
     def scroll(self, offset):
-        if not self.display_offset + offset >= 0:
-            return
-
-        self.display_offset += offset
+        self.display_offset = min(max(self.display_offset + offset, 0), self.offset)
         self.auto_scroll = False # disable auto scroll
         self.redraw = True
 
-    def deactivate_scroll(self):
+    def disable_scroll(self):
         self.display_offset = self.offset
         self.auto_scroll = True
         self.redraw = True
@@ -1071,6 +1074,7 @@ class ScreenManager:
         self.console = ConsoleWindow(height - 1, width, 0, 0, 200)
         self.resize_event = False
         self.int_event = False
+        self.console_key = False
 
     def refresh(self):
         self.screen.leaveok(1)
@@ -1117,6 +1121,18 @@ class ScreenManager:
     def sigint(self, *args):
         self.int_event = True
 
+    def handle_scroll_key(self, key):
+        if key in (b'\x03', b'\r', b'\n'):
+            self.console.disable_scroll()
+        elif key == b'\x1b[5~':
+            self.console.scroll(-self.console.height)
+        elif key == b'\x1b[6~':
+            self.console.scroll(self.console.height)
+        elif key in (b'\x1b[A', b'\x1bOA'):
+            self.console.scroll(-1)
+        elif key in (b'\x1b[B', b'\x1bOB'):
+            self.console.scroll(1)
+
     def main_loop(self):
         old_sigwinch = signal.signal(signal.SIGWINCH, self.sigwinch) # window resized
         old_sigcont = signal.signal(signal.SIGCONT, self.sigcont) # redraw after being suspended
@@ -1133,7 +1149,16 @@ class ScreenManager:
             while True:
                 key = self.get_key()
                 if key:
-                    self.proc.stdin.write(key)
+                    if not self.console.auto_scroll: # currently scrolling
+                        self.handle_scroll_key(key)
+                    elif key == b'\x02':
+                        self.console_key = True
+                    elif self.console_key:
+                        self.console_key = False
+                        self.handle_scroll_key(key)
+                    else:
+                        self.proc.stdin.write(key)
+
                     self.refresh()
 
                 if self.resize_event:
